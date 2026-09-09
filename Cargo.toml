@@ -19,8 +19,7 @@ path = "src/lib.rs"
 # the carrier — a sibling, depended on the way a Technology may depend on one
 # already on main.
 transport = { package = "xmip-core-transport", git = "https://github.com/IlleNilsson/xmip-core-transport", branch = "main" }
-# TODO land: git = "https://github.com/IlleNilsson/xmip-core-transport-cotp", branch = "main"
-cotp = { package = "xmip-core-transport-cotp", path = "../cotp" }
+cotp = { package = "xmip-core-transport-cotp", git = "https://github.com/IlleNilsson/xmip-core-transport-cotp", branch = "main" }
 
 [lints.rust]
 unsafe_code = "forbid"
