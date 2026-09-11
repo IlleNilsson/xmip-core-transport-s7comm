@@ -30,10 +30,16 @@ pub use client::Client;
 pub use header::Message;
 pub use item::{Address, Area};
 pub use session::{Event, Session};
-use transport::error::Result;
+use transport::error::{Result, protocol_error};
+use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
 use transport::socket;
 use transport::{Arrived, Directions, Transport};
 
+/// What one S7 address spans: the Any pointer that names a variable counts
+/// its bytes in sixteen bits, and a delivery is one write at one address.
+pub const MAX_SPAN: usize = 65_535;
+
+#[derive(Clone)]
 pub struct S7Transport {
     plc: String,
     address: String,
@@ -140,12 +146,152 @@ impl Transport for S7Transport {
     }
 }
 
+/// The address the loopback writes at: data block 1 from byte 0, the
+/// payload's length as the range.
+const LOOPBACK_BLOCK: &str = "DB1.DBB0";
+
+impl S7Transport {
+    /// Both ends on this machine: an ephemeral local port, one session's
+    /// worth of CPU holding data block 1 at the far end, the loopback
+    /// timeout on every read. The near end writes the payload there in as
+    /// many jobs as the PDU length takes; the far end takes the block as far
+    /// as it was written once the client disconnects. An empty payload is a
+    /// write of no jobs and an empty block: Setup Communication, then DR.
+    #[must_use]
+    pub fn loopback() -> Self {
+        Self::new("127.0.0.1:0", LOOPBACK_BLOCK).timing_out_after(LOOPBACK_TIMEOUT)
+    }
+}
+
+/// A bound listener waiting for the one client that writes data block 1.
+struct Listening {
+    transport: S7Transport,
+    listener: TcpListener,
+    address: String,
+}
+
+impl FarEnd for Listening {
+    fn address(&self) -> &str {
+        &self.address
+    }
+
+    fn take_one(self: Box<Self>) -> Result<Arrived> {
+        // The block is sized to what one address can span, because the far
+        // end stands before the payload is known; what came back is the
+        // block as far as the client's write jobs reached.
+        let mut session = self.transport.accept_one(&self.listener)?.with_area(
+            Area::DataBlock,
+            1,
+            vec![0u8; MAX_SPAN],
+        );
+        let mut written = 0usize;
+        while let Some(event) = session.next_event()? {
+            if let Event::Written {
+                address,
+                served: true,
+            } = event
+                && address.area == Area::DataBlock
+                && address.db == 1
+            {
+                let end = usize::try_from(address.offset).unwrap_or(usize::MAX);
+                written = written.max(end.saturating_add(usize::from(address.length)));
+            }
+        }
+        let block = session
+            .area(Area::DataBlock, 1)
+            .and_then(|block| block.get(..written))
+            .ok_or_else(|| protocol_error("the data block went missing"))?
+            .to_vec();
+        Ok(Arrived::new(session.origin(), block))
+    }
+}
+
+impl Loopback for S7Transport {
+    fn ceiling(&self) -> Option<usize> {
+        Some(MAX_SPAN)
+    }
+
+    fn far_end(&self) -> Result<Box<dyn FarEnd>> {
+        let (listener, address) = self.bind()?;
+        Ok(Box::new(Listening {
+            transport: self.clone(),
+            listener,
+            address,
+        }))
+    }
+
+    fn send_to(&self, address: &str, payload: &[u8]) -> Result<()> {
+        if payload.len() > MAX_SPAN {
+            return Err(protocol_error(format!(
+                "{} bytes is over the {MAX_SPAN} one address spans",
+                payload.len()
+            )));
+        }
+        Self::new(address, LOOPBACK_BLOCK)
+            .at(self.rack, self.slot)
+            .timing_out_after(LOOPBACK_TIMEOUT)
+            .send(address, payload)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn node(plc: &str, address: &str) -> S7Transport {
         S7Transport::new(plc, address).timing_out_after(Duration::from_secs(2))
+    }
+
+    fn edges() -> Vec<(&'static str, Vec<u8>)> {
+        vec![
+            ("empty", Vec::new()),
+            ("one byte", vec![0x2a]),
+            ("every byte", (0..=255).collect()),
+            ("nul run", vec![0; 512]),
+            ("high bytes", vec![0xff; 512]),
+            ("crlf storm", b"\r\n".repeat(400)),
+        ]
+    }
+
+    /// `len` bytes that a truncation, a reorder or a job at the wrong
+    /// offset would change.
+    fn patterned(len: usize) -> Vec<u8> {
+        (0..len)
+            .map(|at| u8::try_from((at * 31 + at / 251) % 256).unwrap_or(0))
+            .collect()
+    }
+
+    #[test]
+    fn the_loopback_writes_one_stream_into_a_data_block_and_takes_it() {
+        let arrived = S7Transport::loopback().round(b"write var").expect("round");
+        assert_eq!(arrived.bytes, b"write var");
+        // The session's origin is the carrier's: the CR the client opened
+        // with, TSAPs and all.
+        assert!(arrived.origin_uri.starts_with("cotp://127.0.0.1:"));
+        assert!(arrived.origin_uri.ends_with("?src-tsap=0100&dst-tsap=0102"));
+        let long = patterned(3000);
+        assert_eq!(
+            S7Transport::loopback().round(&long).expect("long").bytes,
+            long
+        );
+    }
+
+    #[test]
+    fn the_loopback_returns_the_edge_payloads_whole_up_to_the_span() {
+        let transport = S7Transport::loopback();
+        assert_eq!(transport.ceiling(), Some(MAX_SPAN));
+        for (name, bytes) in edges() {
+            assert!(transport.refuses(&bytes).is_none(), "{name}");
+            let arrived = transport
+                .round(&bytes)
+                .unwrap_or_else(|error| panic!("{name}: {error}"));
+            assert_eq!(arrived.bytes, bytes, "{name}");
+        }
+        let brim = patterned(MAX_SPAN);
+        assert_eq!(transport.round(&brim).expect("brim").bytes, brim);
+        let over = vec![0u8; MAX_SPAN + 1];
+        let refused = transport.round(&over).expect_err("over the span");
+        assert!(refused.message.starts_with("send failed:"), "{refused}");
     }
 
     #[test]
