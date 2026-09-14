@@ -31,6 +31,7 @@ pub use header::Message;
 pub use item::{Address, Area};
 pub use session::{Event, Session};
 use transport::error::{Result, protocol_error};
+use transport::listening::{Accepting, Listening};
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
 use transport::socket;
 use transport::{Arrived, Directions, Transport};
@@ -163,27 +164,14 @@ impl S7Transport {
     }
 }
 
-/// A bound listener waiting for the one client that writes data block 1.
-struct Listening {
-    transport: S7Transport,
-    listener: TcpListener,
-    address: String,
-}
-
-impl FarEnd for Listening {
-    fn address(&self) -> &str {
-        &self.address
-    }
-
-    fn take_one(self: Box<Self>) -> Result<Arrived> {
+impl Accepting for S7Transport {
+    fn take_one(&self, listener: &TcpListener) -> Result<Arrived> {
         // The block is sized to what one address can span, because the far
         // end stands before the payload is known; what came back is the
         // block as far as the client's write jobs reached.
-        let mut session = self.transport.accept_one(&self.listener)?.with_area(
-            Area::DataBlock,
-            1,
-            vec![0u8; MAX_SPAN],
-        );
+        let mut session =
+            self.accept_one(listener)?
+                .with_area(Area::DataBlock, 1, vec![0u8; MAX_SPAN]);
         let mut written = 0usize;
         while let Some(event) = session.next_event()? {
             if let Event::Written {
@@ -213,11 +201,7 @@ impl Loopback for S7Transport {
 
     fn far_end(&self) -> Result<Box<dyn FarEnd>> {
         let (listener, address) = self.bind()?;
-        Ok(Box::new(Listening {
-            transport: self.clone(),
-            listener,
-            address,
-        }))
+        Ok(Box::new(Listening::new(self.clone(), listener, address)))
     }
 
     fn send_to(&self, address: &str, payload: &[u8]) -> Result<()> {
@@ -237,28 +221,10 @@ impl Loopback for S7Transport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use transport::payload::{edge_payloads, patterned};
 
     fn node(plc: &str, address: &str) -> S7Transport {
         S7Transport::new(plc, address).timing_out_after(Duration::from_secs(2))
-    }
-
-    fn edges() -> Vec<(&'static str, Vec<u8>)> {
-        vec![
-            ("empty", Vec::new()),
-            ("one byte", vec![0x2a]),
-            ("every byte", (0..=255).collect()),
-            ("nul run", vec![0; 512]),
-            ("high bytes", vec![0xff; 512]),
-            ("crlf storm", b"\r\n".repeat(400)),
-        ]
-    }
-
-    /// `len` bytes that a truncation, a reorder or a job at the wrong
-    /// offset would change.
-    fn patterned(len: usize) -> Vec<u8> {
-        (0..len)
-            .map(|at| u8::try_from((at * 31 + at / 251) % 256).unwrap_or(0))
-            .collect()
     }
 
     #[test]
@@ -280,7 +246,7 @@ mod tests {
     fn the_loopback_returns_the_edge_payloads_whole_up_to_the_span() {
         let transport = S7Transport::loopback();
         assert_eq!(transport.ceiling(), Some(MAX_SPAN));
-        for (name, bytes) in edges() {
+        for (name, bytes) in edge_payloads() {
             assert!(transport.refuses(&bytes).is_none(), "{name}");
             let arrived = transport
                 .round(&bytes)
