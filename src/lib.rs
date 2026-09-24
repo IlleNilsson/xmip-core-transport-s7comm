@@ -30,6 +30,7 @@ pub use client::Client;
 pub use header::Message;
 pub use item::{Address, Area};
 pub use session::{Event, Session};
+use transport::ceiling;
 use transport::error::{Result, protocol_error};
 use transport::listening::{Accepting, Listening};
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
@@ -165,7 +166,7 @@ impl S7Transport {
 }
 
 impl Accepting for S7Transport {
-    fn take_one(&self, listener: &TcpListener) -> Result<Arrived> {
+    fn take_one(self, listener: &TcpListener) -> Result<Arrived> {
         // The block is sized to what one address can span, because the far
         // end stands before the payload is known; what came back is the
         // block as far as the client's write jobs reached.
@@ -200,17 +201,11 @@ impl Loopback for S7Transport {
     }
 
     fn far_end(&self) -> Result<Box<dyn FarEnd>> {
-        let (listener, address) = self.bind()?;
-        Ok(Box::new(Listening::new(self.clone(), listener, address)))
+        Ok(Box::new(Listening::new(self.clone(), self.bind()?)))
     }
 
     fn send_to(&self, address: &str, payload: &[u8]) -> Result<()> {
-        if payload.len() > MAX_SPAN {
-            return Err(protocol_error(format!(
-                "{} bytes is over the {MAX_SPAN} one address spans",
-                payload.len()
-            )));
-        }
+        ceiling::within(payload.len(), MAX_SPAN, "one address spans")?;
         Self::new(address, LOOPBACK_BLOCK)
             .at(self.rack, self.slot)
             .timing_out_after(LOOPBACK_TIMEOUT)
