@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use cotp::Connection;
 use transport::error::{Result, protocol_error};
+use transport::pool::Pooled;
 
 use crate::header::{self, DEFAULT_PDU_LENGTH, Message, READ, Rosctr, SETUP, Setup, WRITE};
 use crate::item::{self, Address};
@@ -23,7 +24,8 @@ pub const fn cpu_tsap(rack: u8, slot: u8) -> [u8; 2] {
     [0x01, (rack << 5) | (slot & 0x1F)]
 }
 
-/// One session with a CPU.
+/// One session with a CPU, kept between writes while the CPU keeps it
+/// open: a CPU serves few connections, and each costs it one of them.
 pub struct Client {
     connection: Connection,
     pdu_length: u16,
@@ -156,6 +158,15 @@ impl Client {
             )));
         }
         Ok(answer)
+    }
+}
+
+impl Pooled for Client {
+    /// While the CPU keeps the ISO transport connection open. Every job is
+    /// answered before the next is sent, so nothing of one is left for the
+    /// next.
+    fn usable(&mut self) -> bool {
+        self.connection.usable()
     }
 }
 
