@@ -35,7 +35,8 @@ use transport::error::{Result, protocol_error};
 use transport::listening::{Accepting, Listening};
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
 use transport::socket;
-use transport::{Arrived, Directions, Transport};
+use transport::{Arrived, Configured, Directions, Transport};
+use xcore::settings::{Applies, Kind, Presence, Read, Setting, Settings};
 
 /// What one S7 address spans: the Any pointer that names a variable counts
 /// its bytes in sixteen bits, and a delivery is one write at one address.
@@ -148,6 +149,73 @@ impl Transport for S7Transport {
     }
 }
 
+impl Configured for S7Transport {
+    /// The address is the CPU, `host:102`: where a Location connects.
+    const SETTINGS: &'static Settings = &Settings {
+        technology: env!("CARGO_PKG_NAME"),
+        settings: &[
+            Setting {
+                name: "variable",
+                kind: Kind::Text,
+                presence: Presence::Required,
+                meaning: "The S7 address a Receive Location polls and a Send Location writes \
+                          when a target names none, such as `DB12.DBB0.100`.",
+                applies: Applies::Both,
+            },
+            Setting {
+                name: "rack",
+                kind: Kind::Integer {
+                    minimum: 0,
+                    maximum: 7,
+                },
+                presence: Presence::Optional,
+                meaning: "The rack the CPU sits in; rack 0 when left out.",
+                applies: Applies::Both,
+            },
+            Setting {
+                name: "slot",
+                kind: Kind::Integer {
+                    minimum: 0,
+                    maximum: 31,
+                },
+                presence: Presence::Optional,
+                meaning: "The slot the CPU sits in, slot 1 for 1200 and 1500 series; slot 2 \
+                          when left out.",
+                applies: Applies::Both,
+            },
+            Setting {
+                name: "timeout",
+                kind: Kind::Duration,
+                presence: Presence::Optional,
+                meaning: "How long a CPU that stops answering is waited on; unbounded when left \
+                          out.",
+                applies: Applies::Both,
+            },
+        ],
+    };
+
+    /// The variable is refused here if it is no S7 address, rather than at
+    /// the first poll.
+    fn configured(address: &str, settings: &Read) -> Result<Self> {
+        let variable = settings.text("variable");
+        variable.parse::<Address>()?;
+        let mut transport = Self::new(address, variable);
+        let within = |name| {
+            settings
+                .optional_integer(name)
+                .map(|n| u8::try_from(n).map_err(|_| protocol_error("out of range")))
+                .transpose()
+        };
+        let rack = within("rack")?.unwrap_or(transport.rack);
+        let slot = within("slot")?.unwrap_or(transport.slot);
+        transport = transport.at(rack, slot);
+        if let Some(timeout) = settings.optional_duration("timeout") {
+            transport = transport.timing_out_after(timeout);
+        }
+        Ok(transport)
+    }
+}
+
 /// The address the loopback writes at: data block 1 from byte 0, the
 /// payload's length as the range.
 const LOOPBACK_BLOCK: &str = "DB1.DBB0";
@@ -220,6 +288,30 @@ mod tests {
 
     fn node(plc: &str, address: &str) -> S7Transport {
         S7Transport::new(plc, address).timing_out_after(Duration::from_secs(2))
+    }
+
+    #[test]
+    fn s7comm_declares_its_settings_and_reads_through_them() {
+        use xcore::settings::Given;
+        assert_eq!(S7Transport::SETTINGS.problems(), Vec::<String>::new());
+        let given = [
+            (
+                "variable".to_string(),
+                Given::Text("DB12.DBB0.100".to_string()),
+            ),
+            ("slot".to_string(), Given::Integer(1)),
+            ("timeout".to_string(), Given::Text("2s".to_string())),
+        ];
+        let built = S7Transport::open("plc:102", Applies::Receive, &given).expect("configured");
+        assert_eq!(built.address, "DB12.DBB0.100");
+        assert_eq!((built.rack, built.slot), (0, 1));
+        assert_eq!(built.timeout, Some(Duration::from_secs(2)));
+        let Err(refused) = S7Transport::open("plc:102", Applies::Send, &[]) else {
+            panic!("the variable is required");
+        };
+        assert!(refused.message.contains("\"variable\""), "{refused}");
+        let nonsense = [("variable".to_string(), Given::Text("nowhere".to_string()))];
+        assert!(S7Transport::open("plc:102", Applies::Send, &nonsense).is_err());
     }
 
     #[test]
