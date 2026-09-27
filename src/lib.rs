@@ -35,7 +35,7 @@ use transport::error::{Result, protocol_error};
 use transport::listening::{Accepting, Listening};
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
 use transport::socket;
-use transport::{Arrived, Configured, Directions, Transport};
+use transport::{Arrived, Configured, Directions, Pool, Transport};
 use xcore::settings::{Applies, Kind, Presence, Read, Setting, Settings};
 
 /// What one S7 address spans: the Any pointer that names a variable counts
@@ -49,6 +49,8 @@ pub struct S7Transport {
     rack: u8,
     slot: u8,
     timeout: Option<Duration>,
+    /// The sessions a send writes on, set up once per CPU and kept.
+    sessions: Pool<Client>,
 }
 
 impl S7Transport {
@@ -62,6 +64,7 @@ impl S7Transport {
             rack: 0,
             slot: 2,
             timeout: None,
+            sessions: Pool::new(),
         }
     }
 
@@ -139,13 +142,16 @@ impl Transport for S7Transport {
         )])
     }
 
-    /// Write `bytes` at the address; their length is the range written.
+    /// Write `bytes` at the address; their length is the range written. On
+    /// the session kept for the CPU, set up on the first send to it.
     fn send(&self, target: &str, bytes: &[u8]) -> Result<()> {
         let (plc, address) = self.resolve(target);
         let address: Address = address.parse()?;
-        let mut client = Client::connect(plc, self.rack, self.slot, self.timeout)?;
-        client.write(&address, bytes)?;
-        client.disconnect()
+        self.sessions.exchange(
+            plc,
+            || Client::connect(plc, self.rack, self.slot, self.timeout),
+            |client| client.write(&address, bytes),
+        )
     }
 }
 
@@ -272,6 +278,8 @@ impl Loopback for S7Transport {
         Ok(Box::new(Listening::new(self.clone(), self.bind()?)))
     }
 
+    /// A transport of its own, gone once the write is: its kept session
+    /// closes with it, which is how the far end knows the write is whole.
     fn send_to(&self, address: &str, payload: &[u8]) -> Result<()> {
         ceiling::within(payload.len(), MAX_SPAN, "one address spans")?;
         Self::new(address, LOOPBACK_BLOCK)
@@ -397,6 +405,53 @@ mod tests {
             format!("s7comm://{address}/DB12.DBB0.100")
         );
         assert_eq!(arrived[0].bytes, (1..=100u8).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn a_thousand_writes_set_up_once_and_a_session_the_cpu_closed_is_replaced() {
+        const SENDS: usize = 1000;
+        let far_end = node("127.0.0.1:0", "M0").timing_out_after(Duration::from_secs(5));
+        let (listener, address) = far_end.bind().expect("binding");
+        let near = node(&address, "M0").timing_out_after(Duration::from_secs(5));
+        let sending = near.clone();
+        let sender = std::thread::spawn(move || {
+            let began = std::time::Instant::now();
+            for n in 0..SENDS {
+                sending.send("M0", &[u8::try_from(n % 256).expect("a byte")])?;
+            }
+            let took = began.elapsed();
+            // Generous for a debug build under load: a millisecond a write.
+            assert!(took < Duration::from_millis(SENDS as u64), "{took:?}");
+            sending.send("M0", b"!")
+        });
+        let serve = |session: &mut Session, writes: usize| {
+            let (mut setups, mut written) = (0, 0);
+            while written < writes {
+                match session.next_event().expect("serving").expect("one") {
+                    Event::Setup { .. } => setups += 1,
+                    Event::Written { served: true, .. } => written += 1,
+                    other => panic!("{other:?}"),
+                }
+            }
+            setups
+        };
+        let mut session = far_end.accept_one(&listener).expect("accepting").with_area(
+            Area::Flag,
+            0,
+            vec![0u8; 8],
+        );
+        // The connect and Setup Communication once, for every write.
+        assert!(serve(&mut session, SENDS) <= 1);
+        assert_eq!(session.area(Area::Flag, 0).expect("m")[0], 231);
+        drop(session);
+        let mut again = far_end
+            .accept_one(&listener)
+            .expect("a new session")
+            .with_area(Area::Flag, 0, vec![0u8; 8]);
+        serve(&mut again, 1);
+        assert_eq!(again.area(Area::Flag, 0).expect("m")[0], b'!');
+        sender.join().expect("thread").expect("sending");
+        assert_eq!(near.sessions.opened(), 2);
     }
 
     #[test]

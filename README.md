@@ -2,6 +2,8 @@
 
 S7comm transport: Siemens S7 over ISO-on-TCP — setup communication, read and write of data blocks, inputs, outputs and flags by address — a Location reads or writes a PLC area as a Stream. A technology of [xmip-core-transport](https://github.com/IlleNilsson/xmip-core-transport).
 
+A Send Location writes on a session set up once per CPU and kept (`transport::Pool`) — a CPU serves few connections, and each costs it one. Until 2026-09-27 every write connected, set up communication and disconnected.
+
 ## Toolchain
 
 `rust-toolchain.toml` pins the toolchain for the whole estate. Do not change it
