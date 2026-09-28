@@ -12,7 +12,7 @@
 use transport::error::{Result, protocol_error};
 
 /// The first byte of every S7 PDU.
-pub const PROTOCOL_ID: u8 = 0x32;
+const PROTOCOL_ID: u8 = 0x32;
 /// The function code of Setup Communication.
 pub const SETUP: u8 = 0xF0;
 /// The function code of Read Var.

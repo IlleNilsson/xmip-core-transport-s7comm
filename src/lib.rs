@@ -29,8 +29,8 @@ use std::time::Duration;
 pub use client::Client;
 pub use header::Message;
 pub use item::{Address, Area};
+use net::{Target, ceiling};
 pub use session::{Event, Session};
-use transport::ceiling;
 use transport::error::{Result, protocol_error};
 use transport::listening::{Accepting, Listening};
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
@@ -40,16 +40,19 @@ use xcore::settings::{Applies, Kind, Presence, Read, Setting, Settings};
 
 /// What one S7 address spans: the Any pointer that names a variable counts
 /// its bytes in sixteen bits, and a delivery is one write at one address.
-pub const MAX_SPAN: usize = 65_535;
+const MAX_SPAN: usize = 65_535;
 
 #[derive(Clone)]
 pub struct S7Transport {
     plc: String,
     address: String,
+    /// `address` parsed once, where it is an S7 address.
+    parsed: Option<Address>,
     rack: u8,
     slot: u8,
     timeout: Option<Duration>,
-    /// The sessions a send writes on, set up once per CPU and kept.
+    /// The sessions a send writes on and a receive polls on, set up once per
+    /// CPU and kept.
     sessions: Pool<Client>,
 }
 
@@ -58,9 +61,11 @@ impl S7Transport {
     /// slot 2 until [`Self::at`] says otherwise.
     #[must_use]
     pub fn new(plc: impl Into<String>, address: impl Into<String>) -> Self {
+        let address = address.into();
         Self {
             plc: plc.into(),
-            address: address.into(),
+            parsed: address.parse().ok(),
+            address,
             rack: 0,
             slot: 2,
             timeout: None,
@@ -112,7 +117,7 @@ impl S7Transport {
     /// in full, a bare address on the configured CPU, or `host:port` for the
     /// configured address.
     fn resolve<'a>(&'a self, target: &'a str) -> (&'a str, &'a str) {
-        match socket::target("s7comm", target) {
+        match Target::under(&["s7comm"], target).map(|named| (named.authority(), named.path())) {
             Some((plc, "")) => (plc, &self.address),
             Some(pair) => pair,
             None if target.contains(':') => (target, &self.address),
@@ -130,12 +135,20 @@ impl Transport for S7Transport {
         Directions::BOTH
     }
 
-    /// One poll of the address: its bytes as one Stream.
+    /// One poll of the address, on the session kept for the CPU and set up
+    /// on the first receive: its bytes as one Stream.
     fn receive(&self) -> Result<Vec<Arrived>> {
-        let address: Address = self.address.parse()?;
-        let mut client = self.connect()?;
-        let bytes = client.read(&address)?;
-        client.disconnect()?;
+        // Parsed when the transport was made; parsed again only to say why
+        // an address that is none is refused.
+        let address = match self.parsed {
+            Some(address) => address,
+            None => self.address.parse()?,
+        };
+        let bytes = self.sessions.exchange(
+            self.plc.as_str(),
+            || self.connect(),
+            |client| client.read(&address),
+        )?;
         Ok(vec![Arrived::new(
             format!("s7comm://{}/{address}", self.plc),
             bytes,
@@ -451,6 +464,53 @@ mod tests {
         serve(&mut again, 1);
         assert_eq!(again.area(Area::Flag, 0).expect("m")[0], b'!');
         sender.join().expect("thread").expect("sending");
+        assert_eq!(near.sessions.opened(), 2);
+    }
+
+    #[test]
+    fn a_thousand_receives_set_up_once_and_a_session_the_cpu_closed_is_replaced() {
+        const RECEIVES: usize = 1000;
+        let far_end = node("127.0.0.1:0", "M0").timing_out_after(Duration::from_secs(5));
+        let (listener, address) = far_end.bind().expect("binding");
+        let near = node(&address, "M0").timing_out_after(Duration::from_secs(5));
+        let receiving = near.clone();
+        let receiver = std::thread::spawn(move || {
+            let began = std::time::Instant::now();
+            for _ in 0..RECEIVES {
+                assert_eq!(receiving.receive()?[0].bytes, [7]);
+            }
+            let took = began.elapsed();
+            // Generous for a debug build under load: a millisecond a poll.
+            assert!(took < Duration::from_millis(RECEIVES as u64), "{took:?}");
+            receiving.receive()
+        });
+        let serve = |session: &mut Session, reads: usize| {
+            let (mut setups, mut read) = (0, 0);
+            while read < reads {
+                match session.next_event().expect("serving").expect("one") {
+                    Event::Setup { .. } => setups += 1,
+                    Event::Read { served: true, .. } => read += 1,
+                    other => panic!("{other:?}"),
+                }
+            }
+            setups
+        };
+        let accept = || {
+            far_end
+                .accept_one(&listener)
+                .expect("a session")
+                .with_area(Area::Flag, 0, vec![7u8; 8])
+        };
+        // The connect and Setup Communication once, for every poll.
+        let mut session = accept();
+        assert!(serve(&mut session, RECEIVES) <= 1);
+        drop(session);
+        let mut again = accept();
+        serve(&mut again, 1);
+        assert_eq!(
+            receiver.join().expect("thread").expect("polled")[0].bytes,
+            [7]
+        );
         assert_eq!(near.sessions.opened(), 2);
     }
 
