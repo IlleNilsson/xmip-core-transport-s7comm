@@ -14,13 +14,13 @@ use crate::header::{self, DEFAULT_PDU_LENGTH, Message, READ, Rosctr, SETUP, Setu
 use crate::item::{self, Address};
 
 /// The TSAP Xmip presents itself from: a programming device, connection 0.
-pub const LOCAL_TSAP: [u8; 2] = [0x01, 0x00];
+const LOCAL_TSAP: [u8; 2] = [0x01, 0x00];
 
 /// The TSAP a CPU listens on for `rack` and `slot`: `01` then the rack in
 /// the top three bits and the slot in the low five — `0102` for rack 0,
 /// slot 2, where a 300-series CPU sits.
 #[must_use]
-pub const fn cpu_tsap(rack: u8, slot: u8) -> [u8; 2] {
+const fn cpu_tsap(rack: u8, slot: u8) -> [u8; 2] {
     [0x01, (rack << 5) | (slot & 0x1F)]
 }
 
