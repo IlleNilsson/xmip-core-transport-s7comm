@@ -8,6 +8,13 @@ A Receive Location polls on the same kept session. Until 2026-09-28 every receiv
 
 A send target is read by `net::Target` in [xmip-core-library-net](https://github.com/IlleNilsson/xmip-core-library-net), the one reading of a URI every technology calls: scheme, authority, path and decoded query. Until 2026-09-28 it was read through the transport capability's `socket::target`, which split it on its first slash and left the query in the path.
 
+## Acknowledgement
+
+A receive is a poll of the address, Read Var, which consumes nothing at the
+CPU. Its verdict therefore has nothing to tell the CPU, whichever it is: a
+receive cycle that did not complete loses nothing, and the next poll reads the
+address again. The address's bytes arrive whole.
+
 ## Toolchain
 
 `rust-toolchain.toml` pins the toolchain for the whole estate. Do not change it
