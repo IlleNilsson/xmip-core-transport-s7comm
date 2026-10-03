@@ -14,6 +14,10 @@
 //! [`Session`] that is one client's worth of CPU for tests and the
 //! playground.
 //!
+//! **A receive is a poll, Read Var, which consumes nothing at the CPU**, so
+//! its verdict has nothing to tell it, whichever it is: a cycle that did not
+//! complete loses nothing, and the next poll reads the address again.
+//!
 //! The origin URI names the CPU and the address:
 //! `s7comm://host:102/DB12.DBB0.100`. A target is the same, or a bare
 //! address on the configured CPU, or `host:port` for the configured address.
@@ -35,7 +39,7 @@ use transport::error::{Result, protocol_error};
 use transport::listening::{Accepting, Listening};
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
 use transport::socket;
-use transport::{Arrived, Configured, Directions, Pool, Transport};
+use transport::{Acknowledgement, Arrived, Configured, Directions, Pool, Taken, Transport};
 use xcore::settings::{Applies, Kind, Presence, Read, Setting, Settings};
 
 /// What one S7 address spans: the Any pointer that names a variable counts
@@ -135,8 +139,15 @@ impl Transport for S7Transport {
         Directions::BOTH
     }
 
+    fn arrivals(&self) -> transport::Arrivals {
+        transport::Arrivals::Ordered("a poll reads again what is not yet told")
+    }
+
     /// One poll of the address, on the session kept for the CPU and set up
-    /// on the first receive: its bytes as one Stream.
+    /// on the first receive: its bytes as one Stream, whole. The verdict has
+    /// nothing to tell the CPU, whichever it is: Read Var consumes nothing,
+    /// so a cycle that did not complete loses nothing — the next poll reads
+    /// the address again.
     fn receive(&self) -> Result<Vec<Arrived>> {
         // Parsed when the transport was made; parsed again only to say why
         // an address that is none is refused.
@@ -149,9 +160,10 @@ impl Transport for S7Transport {
             || self.connect(),
             |client| client.read(&address),
         )?;
-        Ok(vec![Arrived::new(
+        Ok(vec![Arrived::whole(
             format!("s7comm://{}/{address}", self.plc),
             bytes,
+            Acknowledgement::unconsumed(),
         )])
     }
 
@@ -253,7 +265,7 @@ impl S7Transport {
 }
 
 impl Accepting for S7Transport {
-    fn take_one(self, listener: &TcpListener) -> Result<Arrived> {
+    fn take_one(self, listener: &TcpListener) -> Result<Taken> {
         // The block is sized to what one address can span, because the far
         // end stands before the payload is known; what came back is the
         // block as far as the client's write jobs reached.
@@ -278,7 +290,7 @@ impl Accepting for S7Transport {
             .and_then(|block| block.get(..written))
             .ok_or_else(|| protocol_error("the data block went missing"))?
             .to_vec();
-        Ok(Arrived::new(session.origin(), block))
+        Ok(Taken::new(session.origin(), block))
     }
 }
 
@@ -413,11 +425,14 @@ mod tests {
         assert_eq!(flags.area(Area::Flag, 0).expect("m")[0], 1);
         let arrived = location.join().expect("thread").expect("location");
         assert_eq!(arrived.len(), 1);
+        let arrived = arrived.into_iter().next().expect("one");
+        assert!(arrived.defers(), "a poll consumes nothing: nothing to lose");
+        let arrived = arrived.taken().expect("taken");
         assert_eq!(
-            arrived[0].origin_uri,
+            arrived.origin_uri,
             format!("s7comm://{address}/DB12.DBB0.100")
         );
-        assert_eq!(arrived[0].bytes, (1..=100u8).collect::<Vec<_>>());
+        assert_eq!(arrived.bytes, (1..=100u8).collect::<Vec<_>>());
     }
 
     #[test]
@@ -477,12 +492,12 @@ mod tests {
         let receiver = std::thread::spawn(move || {
             let began = std::time::Instant::now();
             for _ in 0..RECEIVES {
-                assert_eq!(receiving.receive()?[0].bytes, [7]);
+                assert_eq!(receiving.receive()?.remove(0).taken()?.bytes, [7]);
             }
             let took = began.elapsed();
             // Generous for a debug build under load: a millisecond a poll.
             assert!(took < Duration::from_millis(RECEIVES as u64), "{took:?}");
-            receiving.receive()
+            receiving.receive()?.remove(0).taken()
         });
         let serve = |session: &mut Session, reads: usize| {
             let (mut setups, mut read) = (0, 0);
@@ -507,10 +522,7 @@ mod tests {
         drop(session);
         let mut again = accept();
         serve(&mut again, 1);
-        assert_eq!(
-            receiver.join().expect("thread").expect("polled")[0].bytes,
-            [7]
-        );
+        assert_eq!(receiver.join().expect("thread").expect("polled").bytes, [7]);
         assert_eq!(near.sessions.opened(), 2);
     }
 
