@@ -35,6 +35,7 @@ pub use header::Message;
 pub use item::{Address, Area};
 use net::{Target, ceiling};
 pub use session::{Event, Session};
+use transport::ArrivalIdentity;
 use transport::error::{Result, protocol_error};
 use transport::listening::{Accepting, Listening};
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
@@ -160,11 +161,14 @@ impl Transport for S7Transport {
             || self.connect(),
             |client| client.read(&address),
         )?;
-        Ok(vec![Arrived::whole(
-            format!("s7comm://{}/{address}", self.plc),
-            bytes,
-            Acknowledgement::unconsumed(),
-        )])
+        Ok(vec![
+            Arrived::whole(
+                format!("s7comm://{}/{address}", self.plc),
+                bytes,
+                Acknowledgement::unconsumed(),
+            )
+            .scheduled(),
+        ])
     }
 
     /// Write `bytes` at the address; their length is the range written. On
@@ -295,6 +299,12 @@ impl Accepting for S7Transport {
 }
 
 impl Loopback for S7Transport {
+    fn arrival_identity(&self) -> ArrivalIdentity {
+        ArrivalIdentity::Unnamed(
+            "Xmip reads the CPU's data itself, so the CPU it read is in its origin",
+        )
+    }
+
     fn ceiling(&self) -> Option<usize> {
         Some(MAX_SPAN)
     }
