@@ -144,6 +144,10 @@ impl Transport for S7Transport {
         transport::Arrivals::Ordered("a poll reads again what is not yet told")
     }
 
+    fn waiting(&self) -> transport::Waiting {
+        transport::Waiting::Polled("a read of the address returns at once")
+    }
+
     /// One poll of the address, on the session kept for the CPU and set up
     /// on the first receive: its bytes as one Stream, whole. The verdict has
     /// nothing to tell the CPU, whichever it is: Read Var consumes nothing,
