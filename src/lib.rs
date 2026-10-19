@@ -153,7 +153,7 @@ impl Transport for S7Transport {
     /// nothing to tell the CPU, whichever it is: Read Var consumes nothing,
     /// so a cycle that did not complete loses nothing — the next poll reads
     /// the address again.
-    fn receive(&self) -> Result<Vec<Arrived>> {
+    fn receive_up_to(&self, _most: usize) -> Result<Vec<Arrived>> {
         // Parsed when the transport was made; parsed again only to say why
         // an address that is none is refused.
         let address = match self.parsed {
@@ -175,9 +175,16 @@ impl Transport for S7Transport {
         ])
     }
 
+    fn sending(&self) -> transport::Sending {
+        transport::Sending::Gathered(
+            "one S7 write carries the whole body within the negotiated PDU",
+        )
+    }
+
     /// Write `bytes` at the address; their length is the range written. On
     /// the session kept for the CPU, set up on the first send to it.
-    fn send(&self, target: &str, bytes: &[u8]) -> Result<()> {
+    fn send_from(&self, target: &str, outgoing: transport::Outgoing<'_>) -> Result<()> {
+        let bytes: &[u8] = &outgoing.gather()?;
         let (plc, address) = self.resolve(target);
         let address: Address = address.parse()?;
         self.sessions.exchange(
