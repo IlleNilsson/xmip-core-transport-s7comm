@@ -122,7 +122,7 @@ impl S7Transport {
     /// in full, a bare address on the configured CPU, or `host:port` for the
     /// configured address.
     fn resolve<'a>(&'a self, target: &'a str) -> (&'a str, &'a str) {
-        match Target::under(&["s7comm"], target).map(|named| (named.authority(), named.path())) {
+        match Target::under(Self::SCHEMES, target).map(|named| (named.authority(), named.path())) {
             Some((plc, "")) => (plc, &self.address),
             Some(pair) => pair,
             None if target.contains(':') => (target, &self.address),
@@ -239,6 +239,9 @@ impl Configured for S7Transport {
             },
         ],
     };
+
+    /// The schemes a Location's address is entered with to choose this technology.
+    const SCHEMES: &'static [&'static str] = &["s7comm"];
 
     /// The variable is refused here if it is no S7 address, rather than at
     /// the first poll.
