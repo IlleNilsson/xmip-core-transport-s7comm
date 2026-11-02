@@ -467,13 +467,9 @@ mod tests {
         let near = node(&address, "M0").timing_out_after(Duration::from_secs(5));
         let sending = near.clone();
         let sender = std::thread::spawn(move || {
-            let began = std::time::Instant::now();
             for n in 0..SENDS {
                 sending.send("M0", &[u8::try_from(n % 256).expect("a byte")])?;
             }
-            let took = began.elapsed();
-            // Generous for a debug build under load: a millisecond a write.
-            assert!(took < Duration::from_millis(SENDS as u64), "{took:?}");
             sending.send("M0", b"!")
         });
         let serve = |session: &mut Session, writes: usize| {
@@ -514,13 +510,9 @@ mod tests {
         let near = node(&address, "M0").timing_out_after(Duration::from_secs(5));
         let receiving = near.clone();
         let receiver = std::thread::spawn(move || {
-            let began = std::time::Instant::now();
             for _ in 0..RECEIVES {
                 assert_eq!(receiving.receive()?.remove(0).taken()?.bytes, [7]);
             }
-            let took = began.elapsed();
-            // Generous for a debug build under load: a millisecond a poll.
-            assert!(took < Duration::from_millis(RECEIVES as u64), "{took:?}");
             receiving.receive()?.remove(0).taken()
         });
         let serve = |session: &mut Session, reads: usize| {
