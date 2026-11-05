@@ -1,4 +1,4 @@
-//! The CPU's side of one session: what a test or the playground puts at the
+//! The CPU's side of one session: what a test or the essentials puts at the
 //! far end so a Location can be driven without a PLC in the room.
 //!
 //! Not a PLC. One session serves one client and holds areas as byte
