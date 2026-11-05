@@ -12,7 +12,7 @@
 //! writes there. The carrier is `xmip-core-transport-cotp`; this crate is
 //! the S7 header, the addressing, and a client that speaks them — with a
 //! [`Session`] that is one client's worth of CPU for tests and the
-//! playground.
+//! essentials.
 //!
 //! **A receive is a poll, Read Var, which consumes nothing at the CPU**, so
 //! its verdict has nothing to tell it, whichever it is: a cycle that did not
