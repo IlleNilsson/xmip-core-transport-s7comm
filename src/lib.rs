@@ -86,13 +86,6 @@ impl S7Transport {
         self
     }
 
-    /// Give up on a CPU that stops answering.
-    #[must_use]
-    pub const fn timing_out_after(mut self, timeout: Duration) -> Self {
-        self.timeout = Some(timeout);
-        self
-    }
-
     /// Connect to the CPU and set up communication.
     ///
     /// # Errors
@@ -229,19 +222,21 @@ impl Configured for S7Transport {
                           when left out.",
                 applies: Applies::Both,
             },
-            Setting {
-                name: "timeout",
-                kind: Kind::Duration,
-                presence: Presence::Optional,
-                meaning: "How long a CPU that stops answering is waited on; unbounded when left \
-                          out.",
-                applies: Applies::Both,
-            },
+            transport::configured::timeout(
+                Applies::Both,
+                None,
+                "How long a CPU that stops answering is waited on; unbounded when left \
+                 out.",
+            ),
         ],
     };
 
     /// The schemes a Location's address is entered with to choose this technology.
     const SCHEMES: &'static [&'static str] = &["s7comm"];
+
+    fn timeout_kept(&mut self) -> Option<&mut dyn transport::configured::TimeoutKept> {
+        Some(&mut self.timeout)
+    }
 
     /// The variable is refused here if it is no S7 address, rather than at
     /// the first poll.
@@ -258,9 +253,6 @@ impl Configured for S7Transport {
         let rack = within("rack")?.unwrap_or(transport.rack);
         let slot = within("slot")?.unwrap_or(transport.slot);
         transport = transport.at(rack, slot);
-        if let Some(timeout) = settings.optional_duration("timeout") {
-            transport = transport.timing_out_after(timeout);
-        }
         Ok(transport)
     }
 }
