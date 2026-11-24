@@ -1,5 +1,5 @@
-//! The CPU's side of one session: what a test or the essentials puts at the
-//! far end so a Location can be driven without a PLC in the room.
+//! The CPU's side of one session: what a test or the System Tests put at
+//! the far end so a Location can be driven without a PLC in the room.
 //!
 //! Not a PLC. One session serves one client and holds areas as byte
 //! vectors keyed by area and data block number: it answers Setup
