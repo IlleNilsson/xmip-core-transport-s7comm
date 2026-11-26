@@ -44,7 +44,7 @@ impl Client {
             address,
             &LOCAL_TSAP,
             &cpu_tsap(rack, slot),
-            cotp::tpdu::DEFAULT_SIZE_CODE,
+            cotp::declaration::DEFAULT_SIZE_CODE,
             timeout,
         )?;
         let mut client = Self {

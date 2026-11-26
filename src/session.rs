@@ -41,7 +41,8 @@ impl Session {
     /// # Errors
     /// Where the connection could not be accepted or did not open with CR.
     pub fn accept(listener: &TcpListener, timeout: Option<Duration>) -> Result<Self> {
-        let connection = Connection::accept(listener, cotp::tpdu::DEFAULT_SIZE_CODE, timeout)?;
+        let connection =
+            Connection::accept(listener, cotp::declaration::DEFAULT_SIZE_CODE, timeout)?;
         Ok(Self {
             connection,
             areas: HashMap::new(),
