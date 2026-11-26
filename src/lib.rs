@@ -21,32 +21,59 @@
 //! The origin URI names the CPU and the address:
 //! `s7comm://host:102/DB12.DBB0.100`. A target is the same, or a bare
 //! address on the configured CPU, or `host:port` for the configured address.
+//!
+//! **Built with its `declaration` feature alone** the crate is
+//! [`declaration`], what a Location of it is configured with, and none of
+//! the code above, which is behind the default feature: what the surfaces'
+//! library carries (ADR-0064, amendment 2026-11-26).
 
+#[cfg(feature = "default")]
 pub mod client;
+#[cfg(feature = "declaration")]
+pub mod declaration;
+#[cfg(feature = "default")]
 pub mod header;
+#[cfg(feature = "default")]
 pub mod item;
+#[cfg(feature = "default")]
 pub mod session;
 
+#[cfg(feature = "default")]
 use std::net::TcpListener;
+#[cfg(feature = "default")]
 use std::time::Duration;
 
+#[cfg(feature = "default")]
 pub use client::Client;
+#[cfg(feature = "default")]
 pub use header::Message;
+#[cfg(feature = "default")]
 pub use item::{Address, Area};
+#[cfg(feature = "default")]
 use net::{Target, ceiling};
+#[cfg(feature = "default")]
 pub use session::{Event, Session};
+#[cfg(feature = "default")]
 use transport::ArrivalIdentity;
+#[cfg(feature = "default")]
 use transport::error::{Result, protocol_error};
+#[cfg(feature = "default")]
 use transport::listening::{Accepting, Listening};
+#[cfg(feature = "default")]
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
+#[cfg(feature = "default")]
 use transport::socket;
+#[cfg(feature = "default")]
 use transport::{Acknowledgement, Arrived, Configured, Directions, Pool, Taken, Transport};
-use xcore::settings::{Applies, Kind, Presence, Read, Setting, Settings};
+#[cfg(feature = "default")]
+use xcore::settings::{Read, Settings};
 
 /// What one S7 address spans: the Any pointer that names a variable counts
 /// its bytes in sixteen bits, and a delivery is one write at one address.
+#[cfg(feature = "default")]
 const MAX_SPAN: usize = 65_535;
 
+#[cfg(feature = "default")]
 #[derive(Clone)]
 pub struct S7Transport {
     plc: String,
@@ -61,6 +88,7 @@ pub struct S7Transport {
     sessions: Pool<Client>,
 }
 
+#[cfg(feature = "default")]
 impl S7Transport {
     /// Speak to the CPU at `plc` — `host:102` — about `address`, rack 0
     /// slot 2 until [`Self::at`] says otherwise.
@@ -124,6 +152,7 @@ impl S7Transport {
     }
 }
 
+#[cfg(feature = "default")]
 impl Transport for S7Transport {
     fn name(&self) -> &'static str {
         "s7comm"
@@ -188,51 +217,10 @@ impl Transport for S7Transport {
     }
 }
 
+#[cfg(feature = "default")]
 impl Configured for S7Transport {
-    /// The address is the CPU, `host:102`: where a Location connects.
-    const SETTINGS: &'static Settings = &Settings {
-        technology: env!("CARGO_PKG_NAME"),
-        settings: &[
-            Setting {
-                name: "variable",
-                kind: Kind::Text,
-                presence: Presence::Required,
-                meaning: "The S7 address a Receive Location polls and a Send Location writes \
-                          when a target names none, such as `DB12.DBB0.100`.",
-                applies: Applies::Both,
-            },
-            Setting {
-                name: "rack",
-                kind: Kind::Integer {
-                    minimum: 0,
-                    maximum: 7,
-                },
-                presence: Presence::Optional,
-                meaning: "The rack the CPU sits in; rack 0 when left out.",
-                applies: Applies::Both,
-            },
-            Setting {
-                name: "slot",
-                kind: Kind::Integer {
-                    minimum: 0,
-                    maximum: 31,
-                },
-                presence: Presence::Optional,
-                meaning: "The slot the CPU sits in, slot 1 for 1200 and 1500 series; slot 2 \
-                          when left out.",
-                applies: Applies::Both,
-            },
-            transport::configured::timeout(
-                Applies::Both,
-                None,
-                "How long a CPU that stops answering is waited on; unbounded when left \
-                 out.",
-            ),
-        ],
-    };
-
-    /// The schemes a Location's address is entered with to choose this technology.
-    const SCHEMES: &'static [&'static str] = &["s7comm"];
+    const SETTINGS: &'static Settings = declaration::SETTINGS;
+    const SCHEMES: &'static [&'static str] = declaration::SCHEMES;
 
     fn timeout_kept(&mut self) -> Option<&mut dyn transport::configured::TimeoutKept> {
         Some(&mut self.timeout)
@@ -259,8 +247,10 @@ impl Configured for S7Transport {
 
 /// The address the loopback writes at: data block 1 from byte 0, the
 /// payload's length as the range.
+#[cfg(feature = "default")]
 const LOOPBACK_BLOCK: &str = "DB1.DBB0";
 
+#[cfg(feature = "default")]
 impl S7Transport {
     /// Both ends on this machine: an ephemeral local port, one session's
     /// worth of CPU holding data block 1 at the far end, the loopback
@@ -274,6 +264,7 @@ impl S7Transport {
     }
 }
 
+#[cfg(feature = "default")]
 impl Accepting for S7Transport {
     fn take_one(self, listener: &TcpListener) -> Result<Taken> {
         // The block is sized to what one address can span, because the far
@@ -304,6 +295,7 @@ impl Accepting for S7Transport {
     }
 }
 
+#[cfg(feature = "default")]
 impl Loopback for S7Transport {
     fn arrival_identity(&self) -> ArrivalIdentity {
         ArrivalIdentity::Unnamed(
@@ -334,6 +326,7 @@ impl Loopback for S7Transport {
 mod tests {
     use super::*;
     use transport::payload::{edge_payloads, patterned};
+    use xcore::settings::Applies;
 
     fn node(plc: &str, address: &str) -> S7Transport {
         S7Transport::new(plc, address).timing_out_after(Duration::from_secs(2))
