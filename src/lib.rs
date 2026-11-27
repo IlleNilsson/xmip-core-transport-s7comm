@@ -23,9 +23,7 @@
 //! address on the configured CPU, or `host:port` for the configured address.
 //!
 //! **Built with its `declaration` feature alone** the crate is
-//! [`declaration`], what a Location of it is configured with, and none of
-//! the code above, which is behind the default feature: what the surfaces'
-//! library carries (ADR-0064, amendment 2026-11-26).
+//! [`declaration`].
 
 #[cfg(feature = "default")]
 pub mod client;
